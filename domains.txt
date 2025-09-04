@@ -1,1 +1,15 @@
-bandcamp.com 
+http://srm.sutpc.com:8083
+http://tpis.sutpc.com
+http://tp-res.sutpc.com
+https://iam.sutpc.com
+http://vehicle-matching.sutpc.com:18080
+http://nric.sutpc.com:8880
+https://tp-res.sutpc.com
+https://tpvlb.sutpc.com
+https://taxiapi.sutpc.com
+https://nric.sutpc.com
+https://mapres.sutpc.com
+https://transplan.sutpc.com
+https://pms.sutpc.com:9000
+https://ones.sutpc.com
+http://www.sutpc.com
