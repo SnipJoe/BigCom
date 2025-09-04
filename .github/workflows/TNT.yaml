@@ -1,7 +1,7 @@
-name: TNT
+name: BIG
 
 on:
-    workflow_dispatch:
+  workflow_dispatch:
 
 jobs:
   build:
@@ -13,15 +13,24 @@ jobs:
       - name: Setup golang
         uses: actions/setup-go@v2
         with:
-          go-version: 1.21
-          cache: 'go'
-          path: /home/runner/go
-          key: ${{ runner.os }}-go
-
+          go-version: 1.24.4
+          cache: true 
+          cache-dependency-path: go.bin  
+          
       - name: Setup Dependencies
-        run: sudo apt-get install libpcap-dev  
+        run: sudo apt update && sudo apt-get install -y libpcap-dev gcc make git masscan
+
+
+      - name: Cache ProjectDiscovery tools
+        uses: actions/cache@v3
+        id: tool-cache
+        with:
+          path: /home/runner/go/bin
+          key: ${{ runner.os }}-pd-tools-V1
+          # key: ${{ runner.os }}-pd-tools-${{ hashFiles('/home/runner/go/bin/**') }}
 
       - name: Setting up ProjectDiscovery tools
+        if: steps.tool-cache.outputs.cache-hit != 'true'  # 仅在缓存未命中时安装
         env:
           GO111MODULE: on
         run: |
@@ -32,67 +41,66 @@ jobs:
           go install -v github.com/lc/gau/v2/cmd/gau@latest
           go install -v github.com/tomnomnom/waybackurls@latest
           go install -v github.com/projectdiscovery/nuclei/v2/cmd/nuclei@latest
-          #go install -v github.com/projectdiscovery/mapcidr/cmd/mapcidr@latest
+          go install -v github.com/projectdiscovery/mapcidr/cmd/mapcidr@latest
+          go install -v github.com/zan8in/afrog/v3/cmd/afrog@latest
+        shell: bash
+
+
+      - name: Add Go bin to PATH  # 确保工具可被后续步骤访问
+        run: echo "$GOPATH/bin" >> $GITHUB_PATH
+
+      - name: run xray first
+        run: |
+
+          wget https://github.com/chaitin/xray/releases/download/1.9.11/xray_linux_amd64.zip
+          unzip xray_linux_amd64.zip
           
-        shell: bash
-        
-#       - name: Cache ProjectDiscovery tools
-#         uses: actions/cache@v3
-#         with:
-#           cache: 'tools'
-#           path: /home/runner/go
-#           key: ${{ runner.os }}-go-tools
-
-      - name: Running DNS enumeration...
-        run: |
-          rm -rf *_*.txt
-          subfinder -dL domains.txt -config config/subfinder-config.yaml | dnsx -t 350 -o active_subdomains.txt
-          # dnsx -l active_subdomains.txt -t 350 | tee -a active_subdomains.txt
-          # sort -u active_subdomains.txt     
-        shell: bash
+          /home/runner/work/BigCom/BigCom/./xray_linux_amd64
+          for i in $(cat domains.txt); do /home/runner/work/BigCom/BigCom/./xray_linux_amd64 webscan --plugins  xss,sqldet,xxe,cmd-injection,upload,path-traversal,dirscan,redirect,jsonp --basic-crawler $i --html-output ${i#*//}.html ;done
 
 
-      - name: Running httpx for HTTP webservers probbing
-        run: |
-
-           #httpx -l active_subdomains.txt -mc 100,101,200,201,204,301,302,304,400,403,404,500,502,503 -p 1-65535 -t 730 | tee active_urls.txt
-           httpx -l active_subdomains.txt -mc 100,101,200,201,204,301,302,304,400,403,404,500,502,503 -t 730 -o active_urls.txt
-           httpx -l active_subdomains.txt -title -t 230
-        shell: bash
 
       - name: Running way/gau for getting all urls...
         continue-on-error: true
         timeout-minutes: 340
         run: |
-          #nuclei -ut | nuclei -up
-          #nuclei -tags log4j -l active_urls.txt -bs 100 -c 50 -rl 300 -nc | tee nuclei_output.txt
-          #naabu -l passive_subdomains.txt -p 1-65535 -c 2000 | httpx -title -t 230 | tee naabu.txt
-          #naabu -l passive_subdomains.txt -p 1-65535 -c 2000 | tee naabu.txt
-          #naabu -l passive_subdomains.txt -tp 1000 -c 3000 | tee naabu.txt
-          ##cat naabu.txt | waybackurls | tee way_urls.txt
           
-          cat active_urls.txt | gau --subs --blacklist png,jpg,gif,css --o ga_urls.txt
-          cat active_urls.txt | waybackurls > way_urls.txt | tee -a ga_urls.txt
-          #sort -u ga_urls.txt
+          cat domains.txt | gau --subs --blacklist png,jpg,gif,css --o ga_urls.txt
+          cat domains.txt | waybackurls > way_urls.txt
+          if [ $(wc -l < ga_urls.txt) -le 20000 ] && [ $(wc -l < way_urls.txt) -le 20000 ]; then
+            sort -u ga_urls.txt way_urls.txt -o all_urls.txt
+          fi
 
+          httpx -l all_urls.txt -mc 100,101,200,201,204,301,302,304,400,403,404,500,502,503 -t 13000 | tee http_urls.txt
+
+          for i in $(cat all_urls.txt); do /home/runner/work/BigCom/BigCom/./xray_linux_amd64 webscan --plugins  xss,sqldet,xxe,cmd-injection,upload,path-traversal,dirscan,redirect,jsonp --basic-crawler $i --html-output ${i#*//}.html ;done
       - name: Running NucleiFuzing for vulnerability assessment
         continue-on-error: true
         timeout-minutes: 340
         run: |
-          nuclei -up
+        
+          nuclei -up && nuclei -ut
           git clone https://github.com/projectdiscovery/fuzzing-templates.git
-          nuclei -l ga_urls.txt -t fuzzing-templates/ -rl 50 -o nuc_out.txt
+          
+          
+          nuclei -l all_urls.txt -it fuzzing-templates/ -rl 500 -o fuzz_out.txt
+          nuclei -l all_urls.txt -s medium, high, critical -rl 500 -o hig_out.txt
+
+          afrog -T all_urls.txt -S medium, high, critical -rl 500 -o afg.html
           
         shell: bash
 
       - name: Create local changes
+        continue-on-error: true
         run: |
           git add *.txt
+          git add *.html
       - name: Commit results to Github
+        continue-on-error: true
         run: |
-          git config --local user.email "admin@kylin.org"
-          git config --global user.name "kylin-team"
-          git commit -m "InCloud Report" -a --allow-empty
+          git config --local user.email "admin@baby.org"
+          git config --global user.name "fuck-team"
+          git commit -m "Fuck Report" -a --allow-empty
       - name: Push changes
         uses: ad-m/github-push-action@master
         with:
